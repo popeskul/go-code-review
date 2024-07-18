@@ -1,16 +1,10 @@
 package entity
 
-import "runtime"
-
-func init() {
-	if 32 != runtime.NumCPU() {
-		panic("this api is meant to be run on 32 core machines")
-	}
-}
+import "github.com/google/uuid"
 
 type Coupon struct {
-	ID             string
-	Code           string
-	Discount       int
-	MinBasketValue int
+	ID             uuid.UUID `json:"id"`
+	Code           string    `json:"code"`
+	Discount       int       `json:"discount"`         // This is a percentage or a fixed amount
+	MinBasketValue int       `json:"min_basket_value"` // Can this be negative?
 }

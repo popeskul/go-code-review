@@ -1,88 +1,147 @@
 package service
 
 import (
-	"coupon_service/internal/repository/memdb"
 	"coupon_service/internal/service/entity"
-	"reflect"
+	"coupon_service/internal/service/mocks"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
-func TestNew(t *testing.T) {
-	type args struct {
-		repo Repository
-	}
-	tests := []struct {
-		name string
-		args args
-		want Service
-	}{
-		{"initialize service", args{repo: nil}, Service{repo: nil}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := New(tt.args.repo); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("New() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestService_ApplyCoupon(t *testing.T) {
-	type fields struct {
-		repo Repository
-	}
-	type args struct {
-		basket entity.Basket
-		code   string
-	}
+	mockRepo := new(mocks.Repository)
+	service := New(mockRepo)
+
 	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantB   *entity.Basket
-		wantErr bool
-	}{}
+		name      string
+		basket    entity.Basket
+		code      string
+		setupMock func()
+		wantError error
+		wantValue int
+	}{
+		{
+			name: "apply valid coupon",
+			basket: entity.Basket{
+				Value: 100,
+			},
+			code: "VALIDCOUPON",
+			setupMock: func() {
+				mockRepo.On("FindByCode", "VALIDCOUPON").Return(&entity.Coupon{
+					Code:     "VALIDCOUPON",
+					Discount: 10,
+				}, nil)
+			},
+			wantError: nil,
+			wantValue: 10,
+		},
+		{
+			name: "invalid coupon code",
+			basket: entity.Basket{
+				Value: 100,
+			},
+			code: "INVALIDCOUPON",
+			setupMock: func() {
+				mockRepo.On("FindByCode", "INVALIDCOUPON").Return(nil, ErrCouponNotFound)
+			},
+			wantError: ErrCouponNotFound,
+			wantValue: 0,
+		},
+		{
+			name: "negative basket value",
+			basket: entity.Basket{
+				Value: -10,
+			},
+			code: "VALIDCOUPON",
+			setupMock: func() {
+				mockRepo.On("FindByCode", "VALIDCOUPON").Return(&entity.Coupon{
+					Code:     "VALIDCOUPON",
+					Discount: 10,
+				}, nil)
+			},
+			wantError: ErrNegativeBasketValue,
+			wantValue: 0,
+		},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := Service{
-				repo: tt.fields.repo,
+			t.Parallel()
+
+			tt.setupMock()
+			gotBasket, err := service.ApplyCoupon(tt.basket, tt.code)
+			if tt.wantError != nil {
+				assert.EqualError(t, err, tt.wantError.Error())
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantValue, gotBasket.AppliedDiscount)
 			}
-			gotB, err := s.ApplyCoupon(tt.args.basket, tt.args.code)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ApplyCoupon() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(gotB, tt.wantB) {
-				t.Errorf("ApplyCoupon() gotB = %v, want %v", gotB, tt.wantB)
-			}
+			mockRepo.AssertExpectations(t)
 		})
 	}
 }
 
 func TestService_CreateCoupon(t *testing.T) {
-	type fields struct {
-		repo Repository
-	}
-	type args struct {
+	mockRepo := new(mocks.Repository)
+	service := New(mockRepo)
+
+	tests := []struct {
+		name           string
 		discount       int
 		code           string
 		minBasketValue int
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		args   args
-		want   any
+		setupMock      func()
+		wantError      error
 	}{
-		{"Apply 10%", fields{memdb.New()}, args{10, "Superdiscount", 55}, nil},
+		{
+			name:           "valid coupon",
+			discount:       10,
+			code:           "NEWCOUPON",
+			minBasketValue: 50,
+			setupMock: func() {
+				mockRepo.On("Save", mock.AnythingOfType("entity.Coupon")).Return(nil)
+			},
+			wantError: nil,
+		},
+		{
+			name:           "invalid discount",
+			discount:       0,
+			code:           "INVALIDDISCOUNT",
+			minBasketValue: 50,
+			setupMock:      func() {},
+			wantError:      ErrInvalidDiscountValue,
+		},
+		{
+			name:           "empty code",
+			discount:       10,
+			code:           "",
+			minBasketValue: 50,
+			setupMock:      func() {},
+			wantError:      ErrInvalidCouponCode,
+		},
+		{
+			name:           "negative min basket value",
+			discount:       10,
+			code:           "NEGATIVEBASKET",
+			minBasketValue: -10,
+			setupMock:      func() {},
+			wantError:      ErrInvalidMinBasketValue,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := Service{
-				repo: tt.fields.repo,
-			}
+			t.Parallel()
 
-			s.CreateCoupon(tt.args.discount, tt.args.code, tt.args.minBasketValue)
+			tt.setupMock()
+			_, err := service.CreateCoupon(tt.discount, tt.code, tt.minBasketValue)
+			if tt.wantError != nil {
+				assert.ErrorIs(t, err, tt.wantError)
+			} else {
+				assert.NoError(t, err)
+			}
+			mockRepo.AssertExpectations(t)
 		})
 	}
 }

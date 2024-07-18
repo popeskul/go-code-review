@@ -8,7 +8,7 @@ import (
 )
 
 type Config struct {
-	API api.Config
+	API api.Config `yaml:"api"`
 }
 
 func New() Config {

@@ -1,15 +1,27 @@
 package service
 
 import (
-	. "coupon_service/internal/service/entity"
+	serviceEntity "coupon_service/internal/service/entity"
 	"fmt"
+	"sync"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
+)
+
+//go:generate mockery --name Repository --output ./mocks --filename repository.go
+
+var (
+	ErrInvalidDiscountValue  = fmt.Errorf("invalid discount value")
+	ErrInvalidCouponCode     = fmt.Errorf("invalid coupon code")
+	ErrInvalidMinBasketValue = fmt.Errorf("invalid minimum basket value")
+	ErrNegativeBasketValue   = fmt.Errorf("tried to apply discount to negative value")
+	ErrCouponNotFound        = fmt.Errorf("coupon not found")
 )
 
 type Repository interface {
-	FindByCode(string) (*Coupon, error)
-	Save(Coupon) error
+	FindByCode(string) (*serviceEntity.Coupon, error)
+	Save(serviceEntity.Coupon) error
 }
 
 type Service struct {
@@ -22,53 +34,88 @@ func New(repo Repository) Service {
 	}
 }
 
-func (s Service) ApplyCoupon(basket Basket, code string) (b *Basket, e error) {
-	b = &basket
+func (s Service) ApplyCoupon(basket serviceEntity.Basket, code string) (*serviceEntity.Basket, error) {
+	b := &basket
 	coupon, err := s.repo.FindByCode(code)
 	if err != nil {
 		return nil, err
 	}
 
-	if b.Value > 0 {
+	switch {
+	case b.Value > 0:
 		b.AppliedDiscount = coupon.Discount
 		b.ApplicationSuccessful = true
-	}
-	if b.Value == 0 {
-		return
+	case b.Value == 0:
+		return b, nil
+	default:
+		return nil, ErrNegativeBasketValue
 	}
 
-	return nil, fmt.Errorf("Tried to apply discount to negative value")
+	return b, nil
 }
 
-func (s Service) CreateCoupon(discount int, code string, minBasketValue int) any {
-	coupon := Coupon{
+func (s Service) CreateCoupon(discount int, code string, minBasketValue int) (*serviceEntity.Coupon, error) {
+	if discount <= 0 {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidDiscountValue, discount)
+	}
+	if code == "" {
+		return nil, ErrInvalidCouponCode
+	}
+	if minBasketValue < 0 {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidMinBasketValue, minBasketValue)
+	}
+
+	coupon := serviceEntity.Coupon{
 		Discount:       discount,
 		Code:           code,
 		MinBasketValue: minBasketValue,
-		ID:             uuid.NewString(),
+		ID:             uuid.New(),
 	}
 
 	if err := s.repo.Save(coupon); err != nil {
-		return err
+		return nil, fmt.Errorf("failed to save coupon: %w", err)
 	}
-	return nil
+	return &coupon, nil
 }
 
-func (s Service) GetCoupons(codes []string) ([]Coupon, error) {
-	coupons := make([]Coupon, 0, len(codes))
-	var e error = nil
+func (s Service) GetCoupons(codes []string) ([]serviceEntity.Coupon, error) {
+	coupons := make([]serviceEntity.Coupon, 0, len(codes))
+	var eg errgroup.Group
+	var mu sync.Mutex
+	var notFoundErrors []string
 
 	for idx, code := range codes {
-		coupon, err := s.repo.FindByCode(code)
-		if err != nil {
-			if e == nil {
-				e = fmt.Errorf("code: %s, index: %d", code, idx)
-			} else {
-				e = fmt.Errorf("%w; code: %s, index: %d", e, code, idx)
+		idx, code := idx, code
+		eg.Go(func() error {
+			coupon, err := s.repo.FindByCode(code)
+			if err != nil {
+				mu.Lock()
+				if err.Error() == ErrCouponNotFound.Error() {
+					notFoundErrors = append(notFoundErrors, fmt.Sprintf("code: %s, index: %d", code, idx))
+				} else {
+					mu.Unlock()
+					return err
+				}
+				mu.Unlock()
+				return nil
 			}
-		}
-		coupons = append(coupons, *coupon)
+
+			mu.Lock()
+			if coupon != nil {
+				coupons = append(coupons, *coupon)
+			}
+			mu.Unlock()
+			return nil
+		})
 	}
 
-	return coupons, e
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	if len(notFoundErrors) > 0 {
+		return coupons, fmt.Errorf("coupons not found: %v", notFoundErrors)
+	}
+
+	return coupons, nil
 }
